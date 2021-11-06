@@ -8,7 +8,9 @@ Most of this is in an unfinished state.
 ![Raytracing screenshot 2](/Screenshots/ComputeShaderRayTracerTest1.png)
 Raytracing is a little slow on my machine, passing data to the GPU could probably be optimized.
 
-Only really supports spheres at this point.
+Only really supports spheres at this point. 
+
+(Yes, the player is also a sphere :slightly_smiling_face:)
 
 ## Align Sun from HDRI
 An attempt to automatically calculate a direction vector from an HDRI.
