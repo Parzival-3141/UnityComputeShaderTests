@@ -1,0 +1,336 @@
+﻿// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel RayTracing
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+RWTexture2D<float4> Result;
+
+float4 _CameraData;
+float4x4 _CameraToWorld;
+float4x4 _CameraInverseProjection;
+
+Texture2D<float4> _SkyboxTexture;
+SamplerState sampler_SkyboxTexture;
+static const float PI = 3.14159265f;
+float _SkyboxExposure;
+
+int _Bounces;
+float4 _DirectionalLight;
+
+
+
+struct Ray
+{
+	float3 origin;
+	float3 direction;
+	float3 energy;
+};
+
+
+Ray CreateRay(float3 origin, float3 direction, float3 energy = float3(1.0f, 1.0f, 1.0f))
+{
+	Ray ray;
+	ray.origin = origin;
+	ray.direction = direction;
+	ray.energy = energy; // xyz = rgb
+	
+	return ray;
+}
+
+Ray CreateCameraRay(float2 uv)
+{
+	// Transform the camera origin to world space
+    float3 origin = mul(_CameraToWorld, float4(0.0f, 0.0f, 0.0f, 1.0f)).xyz;
+    
+    // Invert the perspective projection of the view-space position
+    float3 direction = mul(_CameraInverseProjection, float4(uv, 0.0f, 1.0f)).xyz;
+	
+    // Transform the direction from camera to world space and normalize
+    direction = mul(_CameraToWorld, float4(direction, 0.0f)).xyz;
+    direction = normalize(direction);
+    return CreateRay(origin, direction);
+}
+
+
+struct RayHit
+{
+	float3 position;
+	float distance;
+	float3 normal;
+	
+    float3 albedo;
+    float3 specular;
+};
+
+RayHit CreateRayHit()
+{
+	RayHit hit;
+	
+	hit.position = float3(0.0f, 0.0f, 0.0f);
+	hit.distance = 1.#INF;
+	hit.normal = float3(0.0f, 0.0f, 0.0f);
+    hit.albedo = float3(0.0f, 0.0f, 0.0f);
+	
+	return hit;
+}
+
+
+void IntersectGroundPlane(Ray ray, inout RayHit bestHit)
+{
+	// Calculate lenth of the ray where the ground plane is intersected
+	float t = -ray.origin.y / ray.direction.y; 
+	
+	if(t > 0 && t < bestHit.distance)
+	{
+		bestHit.distance = t;
+		bestHit.position = ray.origin + t * ray.direction;
+		bestHit.normal   = float3(0.0f, 1.0f, 0.0f);
+		
+        bestHit.albedo   = float3(1.0f, 0.25f, 0.25f);
+        bestHit.specular = float3(0.05f, 0.05f, 0.05f);
+    }
+}
+
+
+struct Sphere
+{
+    float3 position;
+    float radius;
+    float3 albedo;
+    float3 specular;
+};
+
+Sphere CreateSphere(float3 position, float radius)
+{
+    Sphere sphere;
+	
+    sphere.position = position;
+    sphere.radius = radius;
+    sphere.albedo = float3(1.0f, 1.0f, 1.0f);
+    sphere.specular = float3(0.6f, 0.6f, 0.6f);
+	
+    return sphere;
+}
+
+StructuredBuffer<Sphere> _SphereBuffer;
+
+void IntersectSphere(Ray ray, inout RayHit bestHit, Sphere sphere)
+{
+    // Calculate distance along the ray where the sphere is intersected
+    float3 originDelta = ray.origin - sphere.position;
+    float d = -dot(ray.direction, originDelta);
+	
+    float nabla = d * d - dot(originDelta, originDelta) + sphere.radius * sphere.radius;
+    
+	if (nabla < 0)
+        return;
+    
+	float nablaSqrt = sqrt(nabla);
+	float t = d - nablaSqrt > 0 ? d - nablaSqrt : d + nablaSqrt;
+	
+	if (t > 0 && t < bestHit.distance)
+    {
+        bestHit.distance = t;
+        bestHit.position = ray.origin + t * ray.direction;
+        bestHit.normal = normalize(bestHit.position - sphere.position);
+		
+        bestHit.albedo = sphere.albedo;
+        bestHit.specular = sphere.specular;
+    }
+}
+
+
+struct Box
+{
+    float4x4 worldToBox;
+    float4x4 boxToWorld;
+    float lengthRadius;
+};
+
+StructuredBuffer<Box> _BoxBuffer;
+
+Box CreateBox(float3 position, float3 rotation, float3 scale)
+{
+	// Convert pos, rot, scale data to matrices
+    float4x4 posMatrix = float4x4(
+	  1,       0,      0, position.x,
+	  0,       1,      0, position.y,
+	  0,       0,      1, position.z,
+	  0,       0,      0,     1);
+	
+    float4x4 scaleMatrix = float4x4(
+	scale.x,   0,      0,     0,
+	  0,    scale.y,   0,     0,
+	  0,       0,   scale.z,  0,
+	  0,       0,      0,     1);
+	
+	// Creating rotation matrix
+    float x = rotation.x;
+    float4x4 rotX = float4x4(
+	  1,       0,      0,     0,
+      0,     cos(x), sin(x),  0,
+      0,    -sin(x), cos(x),  0,
+      0,       0,      0,     1);
+	
+    float y = rotation.y;
+    float4x4 rotY = float4x4(
+	cos(y),    0,   -sin(y),  0,
+      0,       1,      0,     0,
+    sin(y),    0,    cos(y),  0,
+      0,       0,      0,     1);
+	
+    float z = rotation.z;
+    float4x4 rotZ = float4x4(
+	cos(z), -sin(z),   0,     0,
+    sin(z),  cos(z),   0,     0,
+      0,       0,      1,     0,
+      0,       0,      0,     1);
+	
+    float4x4 rotMatrix = rotZ * rotX * rotY;
+	
+    float4x4 boxAffine = scaleMatrix * rotMatrix * posMatrix;
+	
+	
+	// No idea how to get worldToLocal & localToWorld matrices from this
+    //(1 / determinant(boxAffine)) * ;
+	
+	
+    Box box;
+	//@Incomplete: FUCK YOU
+    return box;
+}
+
+void IntersectBox(Ray ray, inout RayHit bestHit, Box box)
+{
+	// Convert ray from world to Box space
+    float3 rOrigin = mul(box.worldToBox, float4(ray.origin, 1)).xyz;
+    float3 rDir = mul(box.worldToBox, float4(ray.direction, 0)).xyz;
+
+    Ray rayBox = CreateRay(rOrigin, rDir, ray.energy);
+	
+	// Ray-Box intersection in Box space
+    float3 m = 1.0f / rayBox.direction;
+    float3 s = float3(
+	(rayBox.direction.x < 0.0f) ? 1.0f : -1.0f, 
+	(rayBox.direction.y < 0.0f) ? 1.0f : -1.0f, 
+	(rayBox.direction.z < 0.0f) ? 1.0f : -1.0f);
+	
+    float3 t1 = m * (-rayBox.origin + s * box.lengthRadius);
+    float3 t2 = m * (-rayBox.origin - s * box.lengthRadius);
+	
+    float tN = max(max(t1.x, t1.y), t1.z);
+    float tF = min(min(t2.x, t2.y), t2.z);
+	
+    if (tN > tF || tF < 0.0f) { return; }
+    
+	
+    if (tN > 0 && tN < bestHit.distance)
+    {
+        bestHit.distance = tN;
+		bestHit.position = ray.origin + tN * ray.direction;
+	
+		// Compute normal in world space
+		if (t1.x > t1.y && t1.x > t1.z)
+			bestHit.normal = box.boxToWorld[0].xyz * s.x;
+		else if (t1.y > t1.z)
+			bestHit.normal = box.boxToWorld[1].xyz * s.y;
+		else
+			bestHit.normal = box.boxToWorld[2].xyz * s.z;
+		
+        bestHit.albedo   = float3(0, 0, 0);
+        bestHit.specular = float3(0.5f, 0.5f, 0.5f);
+    }
+}
+
+
+
+RayHit Trace(Ray ray, int bounceDepth = 0)
+{
+	RayHit bestHit = CreateRayHit();
+    IntersectGroundPlane(ray, bestHit);
+	
+    uint numSpheres, sphereStride;
+    _SphereBuffer.GetDimensions(numSpheres, sphereStride);
+    for (uint i = 0; i < numSpheres; i++)
+    {
+        IntersectSphere(ray, bestHit, _SphereBuffer[i]);
+    }
+	
+    //uint numBoxes, boxStride;
+    //_BoxBuffer.GetDimensions(numBoxes, boxStride);
+    //for (uint j = 0; j < numBoxes; j++)
+    //{
+    //    IntersectBox(ray, bestHit, _BoxBuffer[j]);
+    //}
+	
+	// IntersectTest CameraSphere
+	if(bounceDepth > 0)
+		IntersectSphere(ray, bestHit, CreateSphere(_CameraData.xyz, _CameraData.w));
+	
+    return bestHit;
+}
+
+
+float3 Shade(inout Ray ray, RayHit hit)
+{
+	if(hit.distance < 1.#INF)
+	{
+		// @Refactor: isn't very PBR like, don't think it's accurate even for diffuse/spec workflow.
+		
+		// Reflect the ray and multiply energy with specular reflection
+		ray.origin = hit.position + hit.normal * 0.001f;
+		ray.direction = reflect(ray.direction, hit.normal);
+		ray.energy *= hit.specular;
+		
+		bool isShadow = false;
+		Ray shadowRay = CreateRay(hit.position + hit.normal * 0.001f, -1 * _DirectionalLight.xyz);
+		RayHit shadowHit = Trace(shadowRay);
+		if(shadowHit.distance != 1.#INF)
+			return float3(0.0f, 0.0f, 0.0f);
+		
+		// Return diffuse shaded color
+        return saturate(dot(hit.normal, _DirectionalLight.xyz) * -1) * (_DirectionalLight.w * _SkyboxExposure) * hit.albedo;
+    }
+	else
+	{
+		// Erase the ray's energy; The sky doesn't reflect anything
+		ray.energy = 0.0f;
+		
+		// Write spherical colors
+		// Result[id.xy] = float4(ray.direction * 0.5f + 0.5f, 1.0f);
+	
+		// Sample the Skybox and write it
+		float theta = acos(ray.direction.y) / -PI;
+		float phi = atan2(ray.direction.x, -ray.direction.z) / -PI * 0.5f;
+		return _SkyboxTexture.SampleLevel(sampler_SkyboxTexture, float2(phi, theta), 0).xyz * _SkyboxExposure;
+	}
+}
+
+
+[numthreads(8,8,1)]
+void RayTracing (uint3 id : SV_DispatchThreadID)
+{
+	// Get the dimensions of the RenderTexture
+    uint width, height;
+	Result.GetDimensions(width, height);
+	
+	// Transform pixel to [-1,1] range
+	float2 uv = float2((id.xy + float2(0.5f, 0.5f)) / float2(width, height) * 2.0f - 1.0f);
+	
+	// Get ray for the UVs
+	Ray ray = CreateCameraRay(uv);
+	
+	
+	// Trace and Shade
+	float3 result = float3(0, 0, 0);
+	for (int i = 0; i < 1 + _Bounces; i++)
+	{
+		RayHit hit = Trace(ray, i);
+		result += ray.energy * Shade(ray, hit);
+		
+		if(!any(ray.energy))
+			break;
+	}
+	
+	Result[id.xy] = float4(result, 1);	
+}

@@ -1,0 +1,156 @@
+﻿// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel ConvertToGrayscale
+#pragma kernel Blur
+#pragma kernel SetExposure
+#pragma kernel CalculateSunPosition
+
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+RWTexture2D<float4> _Texture;
+
+bool _DoGrayscale;
+
+bool _DoBlur;
+int _Sigma;
+float _Exposure;
+
+static const float PI = 3.14159265f;
+
+void GammaExpandChannel(inout float channel)
+{
+	if(channel < 0.04045f)
+		channel /= 12.92f;
+	else
+		channel = pow(abs((channel + 0.055f) / 1.055f), 2.4f);
+}
+
+void GammaExpandRGB(inout float3 rgb)
+{
+	GammaExpandChannel(rgb.x);
+	GammaExpandChannel(rgb.y);
+	GammaExpandChannel(rgb.z);
+}
+
+void GammaCompressChannel(inout float channel)
+{
+	if(channel < 0.0031308)
+		channel *= 12.92f;
+	else
+		channel = 1.055f * pow(abs(channel), 1 / 2.4f) -  0.055f;
+}
+
+float3 LinearLuminanceToRBG(float linearLum)
+{
+	GammaCompressChannel(linearLum);
+	return float3(linearLum, linearLum, linearLum);
+}
+
+
+[numthreads(8,8,1)]
+void ConvertToGrayscale (uint3 id : SV_DispatchThreadID)
+{
+	float4 col = _Texture[id.xy];
+
+	if(_DoGrayscale)
+	{
+		// Linearize channel by doing sRGB gamma expansion
+		GammaExpandRGB(col.xyz);
+		
+		// Calculate linear luminance
+		col.x *= 0.2126f;
+		col.y *= 0.7152f;
+		col.z *= 0.0722f;
+		
+		float linearLuminance = col.x + col.y + col.z;
+		
+		// Recompress linearLuminance into linear sRGB
+		col.xyz = LinearLuminanceToRBG(linearLuminance);	
+	}	
+
+	_Texture[id.xy] = float4(col.x, col.y, col.z, col.w);
+	
+}
+
+//float GaussianFunction(int x, int y)
+//{
+//    float coeff = (x * x + y * y) / (2 * (_Sigma * _Sigma));
+//    return pow(1f / (2f * PI * (_Sigma * _Sigma)), coeff);
+//}
+
+
+[numthreads(8,8,1)]
+void Blur (uint3 id : SV_DispatchThreadID)
+{
+	uint width, height;
+	_Texture.GetDimensions(width, height);
+	
+    int3 topBottom = int3(1, 2, 1);
+    int3 middle    = int3(2, 4, 2);
+    int3x3 kernel  = int3x3(topBottom, middle, topBottom);
+	
+	if(!_DoBlur)
+    {
+        return;
+    }
+	
+	// If current pixel is on the border
+    //if (id.x == 0 || id.x == width - 1 || id.y == 0 || id.y == height - 1)
+    //{
+    //    _Texture[id.xy] = float4(1, 1, 1, 1);
+    //    return;
+    //}
+	
+	// Iterate over pixels surrounding id.xy
+	
+    int2 iid = id.xy;
+    float4 accCol;
+    for (int x = -1; x < 2; x++) //
+    {
+        for (int y = -1; y < 2; y++)
+        {
+            //if (x == iid.x && y == iid.y)
+            //    continue;
+			
+            uint2 pixelPos = uint2(iid.x + x * _Sigma, iid.y + y * _Sigma);
+			
+            if (pixelPos.x < 0 || pixelPos.x > width - 1)
+            {
+                pixelPos.x = pixelPos.x < 0 
+				? width + pixelPos.x // x is negative
+				: pixelPos.x - width;
+            }
+			
+            if (pixelPos.y < 0 || pixelPos.y > height - 1)
+            {
+                pixelPos.y = pixelPos.y < 0
+				? height + pixelPos.y // y is negative
+				: pixelPos.y - height;
+            }
+			
+            float4 pixelCol = _Texture[pixelPos];
+			
+            accCol += pixelCol * ( (kernel[x + 1][y + 1] / 16.0f) );
+            //accCol += pixelCol * _Sigma /** GaussianFunction(iid.x, iid.y)*/;
+        }
+    }
+	
+    _Texture[id.xy] = accCol;
+}
+
+
+[numthreads(8, 8, 1)]
+void SetExposure(uint3 id : SV_DispatchThreadID)
+{
+    _Texture[id.xy] *= _Exposure;
+}
+
+[numthreads(8,8,1)]
+void CalculateSunPosition (uint3 id : SV_DispatchThreadID)
+{
+	uint width, height;
+	_Texture.GetDimensions(width, height);
+
+	float2 uv = float2((id.xy + float2(0.5f, 0.5f)) / float2(width, height) * 2.0f - 1.0f);
+	_Texture[id.xy] = float4(uv.x, uv.y, 1 - uv.y, 0);
+}	
