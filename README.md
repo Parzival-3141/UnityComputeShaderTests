@@ -1,9 +1,11 @@
 # UnityComputeShaderTests
+![Raytracing screenshot 1](/Screenshots/ComputeShaderRayTracerTest2.png)
 A few tests with compute shaders, including CPU Raytracing.
 
 Most of this is in an unfinished state.
 
 ## Raytracing
+![Raytracing screenshot 2](/Screenshots/ComputeShaderRayTracerTest1.png)
 Raytracing is a little slow on my machine, passing data to the GPU could probably be optimized.
 
 Only really supports spheres at this point.
