@@ -1,6 +1,6 @@
 # UnityComputeShaderTests
 ![Raytracing screenshot 1](/Screenshots/ComputeShaderRayTracerTest2.png)
-A few tests with compute shaders, including CPU Raytracing.
+A few tests with compute shaders, including GPU Raytracing.
 
 Most of this is in an unfinished state.
 
